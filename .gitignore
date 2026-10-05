@@ -1,20 +1,19 @@
-# Virtual environment
+# Virtual environments
 .venv/
+.venv-dev/
 venv/
 
-# Python cache
+# Python cache / tools
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
-# Environment variables
+# Secrets: never in git
 .env
-
-# Firebase credentials
 serviceAccountKey.json
 
-# IDE
+# IDE / OS
 .vscode/
-
-# OS files
+.idea/
 .DS_Store
 Thumbs.db

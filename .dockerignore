@@ -1,0 +1,10 @@
+.git
+.venv
+.venv-dev
+.env
+serviceAccountKey.json
+**/__pycache__
+.pytest_cache
+tests
+loadtest
+*.md

@@ -1,0 +1,58 @@
+# Render Blueprint (free plans): the API plus a Key Value (Redis-compatible) store
+# for the shared cache and rate-limit counts. Checked against
+# https://render.com/docs/blueprint-spec.
+#
+# FREE plan limits: the service sleeps after 15 minutes without a request (the
+# first request after that waits ~1 minute; the app pings /healthz when it
+# opens to wake it early), one instance only, 512 MB memory, no autoscaling.
+#
+# Going paid later (this is all that changes): set `plan: starter` (always on),
+# and to run several copies behind Render's load balancer use a bigger plan and
+# add:
+#     scaling: {minInstances: 2, maxInstances: 6, targetCPUPercent: 70, targetMemoryPercent: 80}
+# and WEB_CONCURRENCY "2". The app keeps nothing per instance that another
+# instance needs, so more copies need no code change.
+
+services:
+  - type: web
+    name: sosafe-backend
+    runtime: python
+    region: singapore          # the nearest Render region to India
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: >-
+      uvicorn app.main:create_app --factory
+      --host 0.0.0.0 --port $PORT
+      --workers $WEB_CONCURRENCY
+      --no-server-header --no-access-log
+      --timeout-keep-alive 20
+      --timeout-graceful-shutdown 20
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit  # redeploys when you push to GitHub
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7          # the version the tests ran on
+      - key: WEB_CONCURRENCY
+        value: "1"             # free plan: 512 MB, one worker process
+      - key: ENVIRONMENT
+        value: production
+      - key: OLA_API_KEY
+        sync: false            # entered in the dashboard, never in this file
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: AUTH_MODE
+        value: optional        # switch to "required" once the app that sends tokens is out
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"             # Render's load balancer adds one X-Forwarded-For entry
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: sosafe-cache
+          property: connectionString
+
+  - type: keyvalue
+    name: sosafe-cache
+    region: singapore
+    plan: free
+    maxmemoryPolicy: allkeys-lru   # full: forget the least used answers, never refuse
+    ipAllowList: []                # reachable only from services inside this Render account
