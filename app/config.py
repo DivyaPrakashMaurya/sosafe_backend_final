@@ -101,11 +101,20 @@ class Settings:
 
     # ── OpenStreetMap (Overpass): nearby police stations, hospitals and the like ──
     # Tried in this order; a public service, so it is asked about a ~1 km square at a time and answers are kept.
+    # The French mirror answered when the others did not (measured 2026-10-24: overpass-api.de limits us with
+    # 429s or hangs, kumi never answers); the others are kept as fallbacks. A server that has not answered
+    # after `overpass_stagger` seconds is joined by the next one (first good answer wins), and the whole lookup
+    # stops after `overpass_timeout` seconds: the app gives up at 10.
     overpass_urls: tuple[str, ...] = (
+        "https://overpass.openstreetmap.fr/api/interpreter",
         "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
     )
-    overpass_timeout: float = 9.0
+    overpass_timeout: float = 8.0
+    overpass_stagger: float = 2.0
+    # An answer younger than this is used as it is; older ones are asked for again, and served anyway (as "stale")
+    # if the map servers cannot be reached, for as long as the cache keeps them (`nearby` below).
+    nearby_fresh_seconds: int = 12 * 3600
 
     # ── sign-in (Firebase ID tokens) ──
     auth_mode: AuthMode = "optional"
@@ -120,7 +129,7 @@ class Settings:
             "coordinates": 30 * 24 * 3600,
             "reverse": 30 * 24 * 3600,
             "route": 120,
-            "nearby": 12 * 3600,
+            "nearby": 7 * 24 * 3600,
         }
     )
     cache_memory_max_entries: int = 5000
@@ -162,7 +171,7 @@ class Settings:
             "coordinates": _int(env, "CACHE_TTL_COORDINATES_SECONDS", 30 * day, 0, 90 * day),
             "reverse": _int(env, "CACHE_TTL_REVERSE_SECONDS", 30 * day, 0, 90 * day),
             "route": _int(env, "CACHE_TTL_ROUTE_SECONDS", 120, 0, 900),
-            "nearby": _int(env, "CACHE_TTL_NEARBY_SECONDS", 12 * 3600, 0, 7 * day),
+            "nearby": _int(env, "CACHE_TTL_NEARBY_SECONDS", 7 * day, 0, 30 * day),
         }
 
         origins = tuple(o.strip() for o in _text(env, "CORS_ORIGINS").split(",") if o.strip())
@@ -181,7 +190,9 @@ class Settings:
             breaker_failures=_int(env, "OLA_BREAKER_FAILURES", 5, 1, 100),
             breaker_cooldown_seconds=_float(env, "OLA_BREAKER_COOLDOWN_SECONDS", 15.0, 1.0, 600.0),
             overpass_urls=overpass or cls.__dataclass_fields__["overpass_urls"].default,
-            overpass_timeout=_float(env, "OVERPASS_TIMEOUT_SECONDS", 9.0, 1.0, 30.0),
+            overpass_timeout=_float(env, "OVERPASS_TIMEOUT_SECONDS", 8.0, 1.0, 30.0),
+            overpass_stagger=_float(env, "OVERPASS_STAGGER_SECONDS", 2.0, 0.0, 10.0),
+            nearby_fresh_seconds=_int(env, "NEARBY_FRESH_SECONDS", 12 * 3600, 60, 7 * day),
             auth_mode=auth_mode,  # type: ignore[arg-type]
             firebase_project_id=_text(env, "FIREBASE_PROJECT_ID"),
             redis_url=_text(env, "REDIS_URL"),

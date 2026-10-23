@@ -7,6 +7,7 @@ MockTransport, Redis is an in-memory stand-in.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import replace
 from typing import Any, Callable, Optional
@@ -109,6 +110,8 @@ class FakeOverpass:
         self.calls.append(request)
         if self.override is not None:
             result = self.override(request)
+            if inspect.isawaitable(result):
+                result = await result
             if isinstance(result, Exception):
                 raise result
             if result is not None:

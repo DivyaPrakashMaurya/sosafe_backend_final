@@ -18,7 +18,7 @@ app/
     deps.py          who is calling (sign-in), rate limits
   services/places.py the four lookups: cache first, then Ola
   services/nearby.py nearby safe places (police, hospitals...): cache first, then OpenStreetMap (Overpass)
-  clients/overpass.py OpenStreetMap's Overpass API: servers tried in turn, same circuit breaker
+  clients/overpass.py OpenStreetMap's Overpass API: servers tried in turn (a slow one is joined by the next), 8 s limit, same circuit breaker
   domain/nearby.py   the kinds of place, the question, reading the answer, distances (no network)
   clients/ola.py     Ola Maps: one async connection pool, timeouts, one retry, circuit breaker
   domain/route_schedule.py  total time + check-in schedule (the numbers the phone's timers use)

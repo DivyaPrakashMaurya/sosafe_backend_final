@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+
 import httpx
 import pytest
 
@@ -232,8 +236,8 @@ def test_one_question_names_every_kind_of_its_group_with_its_own_limit(ola, over
         assert query.startswith("[out:json]")
         assert "out tags center qt" in query
     # The busy kinds are capped harder, so they cannot crowd out a rare one in the same question.
-    assert ".parking out tags center qt 80;" in roadside
-    assert ".mechanic out tags center qt 60;" in roadside
+    assert ".parking out tags center qt 50;" in roadside
+    assert ".mechanic out tags center qt 40;" in roadside
 
 
 def test_the_question_is_posted_with_an_identifying_user_agent(ola, overpass):
@@ -284,14 +288,15 @@ def test_a_group_with_only_some_kinds_is_kept_so_the_empty_kinds_cost_nothing_ei
     assert len(overpass.calls) == 1
 
 
-def test_with_redis_the_answer_is_shared_and_kept_for_hours(ola, overpass, fake_redis):
+def test_with_redis_the_answer_is_shared_and_kept_for_a_week_to_stand_in_when_the_map_servers_are_down(ola, overpass, fake_redis):
     overpass.elements = one_place()
     with client_for(ola, overpass=overpass, redis=fake_redis) as client:
         ask(client)
     keys = [k for k in fake_redis.data if ":nearby:" in k]
     assert len(keys) == 1
-    assert fake_redis.ttl[keys[0]] == 12 * 3600
+    assert fake_redis.ttl[keys[0]] == 7 * 24 * 3600
     assert ":nearby:emergency:" in keys[0], "kept for the group"
+    assert set(json.loads(fake_redis.data[keys[0]])) == {"at", "kinds"}, "stamped with when it was fetched"
     assert str(LAT) not in keys[0], "the key names the square, not the person"
 
 
@@ -497,3 +502,281 @@ def test_distance_is_right():
     assert domain.distance_m(LAT, LNG, LAT, LNG) == 0
     assert 110_000 < domain.distance_m(0, 0, 1, 0) < 112_000
     assert domain.distance_m(LAT, LNG, LAT + 0.001, LNG) == pytest.approx(111.2, abs=1.0)
+
+
+# ─── the map servers: which, in what order, how long ───
+
+def test_the_servers_tried_are_the_ones_that_answered_in_testing_and_the_dead_one_is_gone():
+    settings = make_settings()
+    urls = settings.overpass_urls
+    assert urls[0] == "https://overpass.openstreetmap.fr/api/interpreter", "the one that answered, first"
+    assert "https://overpass-api.de/api/interpreter" in urls
+    assert not any("kumi" in u for u in urls), "never answered in testing"
+    assert settings.overpass_timeout <= 9, "the app gives up at 10 seconds"
+
+
+def hedged(**overrides):
+    values = {
+        "overpass_urls": ("https://one.example/api", "https://two.example/api", "https://three.example/api"),
+        "overpass_stagger": 0.1,
+        "overpass_timeout": 3.0,
+    }
+    values.update(overrides)
+    return make_settings(**values)
+
+
+def host(request):
+    return request.url.host
+
+
+def test_servers_are_asked_in_order_and_a_healthy_first_one_is_never_joined(ola, overpass):
+    overpass.elements = one_place()
+    with client_for(ola, hedged(overpass_stagger=2.0), overpass=overpass) as client:
+        r = ask(client)
+    assert r.status_code == 200
+    assert [host(c) for c in overpass.calls] == ["one.example"], "no extra load on a public server that is answering"
+
+
+def test_a_server_that_goes_quiet_is_joined_by_the_next_and_the_first_good_answer_wins(ola, overpass):
+    overpass.elements = one_place()
+
+    async def first_hangs(request):
+        if host(request) == "one.example":
+            await asyncio.sleep(30)
+        return None
+
+    overpass.override = first_hangs
+    started = time.monotonic()
+    with client_for(ola, hedged(), overpass=overpass) as client:
+        r = ask(client)
+    assert r.status_code == 200
+    assert len(body(r)["places"]) == 1
+    assert time.monotonic() - started < 2.0, "did not wait for the quiet server"
+    assert [host(c) for c in overpass.calls][:2] == ["one.example", "two.example"]
+
+
+def test_a_server_that_turns_us_away_is_replaced_at_once_not_after_the_pause(ola, overpass):
+    overpass.elements = one_place()
+    overpass.override = lambda request: httpx.Response(429, text="slow down") if host(request) == "one.example" else None
+    started = time.monotonic()
+    with client_for(ola, hedged(overpass_stagger=5.0), overpass=overpass) as client:
+        r = ask(client)
+    assert r.status_code == 200
+    assert time.monotonic() - started < 1.5, "a refusal does not cost the 5 second wait"
+    assert [host(c) for c in overpass.calls] == ["one.example", "two.example"]
+
+
+def test_the_whole_lookup_stops_at_the_limit_even_if_every_server_hangs(ola, overpass):
+    async def everything_hangs(request):
+        await asyncio.sleep(30)
+
+    overpass.override = everything_hangs
+    started = time.monotonic()
+    with client_for(ola, hedged(overpass_timeout=0.6), overpass=overpass) as client:
+        r = ask(client)
+    assert r.status_code == 504
+    assert body(r)["error"]["code"] == "places_timeout"
+    assert time.monotonic() - started < 2.0
+    assert len(overpass.calls) == 3, "all three were tried inside the limit"
+
+
+def test_a_slow_first_server_still_wins_over_the_one_that_joined_it_if_it_answers_in_time(ola, overpass):
+    overpass.elements = one_place()
+
+    async def slow_first_hung_second(request):
+        await asyncio.sleep(0.4 if host(request) == "one.example" else 30)
+        return None
+
+    overpass.override = slow_first_hung_second
+    with client_for(ola, hedged(), overpass=overpass) as client:
+        r = ask(client)
+    assert r.status_code == 200
+    assert len(body(r)["places"]) == 1
+    assert [host(c) for c in overpass.calls][:2] == ["one.example", "two.example"], "the second did join, and was dropped"
+
+
+def test_a_partial_answer_from_one_server_is_not_used_when_another_has_the_whole_one(ola, overpass):
+    overpass.elements = one_place()
+    overpass.override = lambda request: (
+        httpx.Response(200, json={"elements": [], "remark": "runtime error: out of memory"}) if host(request) == "one.example" else None
+    )
+    with client_for(ola, hedged(), overpass=overpass) as client:
+        r = ask(client)
+    assert r.status_code == 200
+    assert len(body(r)["places"]) == 1
+
+
+def test_if_every_server_refuses_it_is_a_clear_error_after_trying_each_once(ola, overpass):
+    overpass.override = lambda request: httpx.Response(429, text="no")
+    with client_for(ola, hedged(), overpass=overpass) as client:
+        r = ask(client)
+    assert r.status_code == 502
+    assert body(r)["error"]["code"] == "places_error"
+    assert len(overpass.calls) == 3
+
+
+# ─── an old answer stands in when the map servers cannot be reached ───
+
+class Ticking:
+    """The service's clock, moved by the test."""
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_an_answer_older_than_half_a_day_is_asked_for_again(ola, overpass):
+    overpass.elements = one_place()
+    clock = Ticking()
+    with client_for(ola, overpass=overpass) as client:
+        client.app.state.nearby._clock = clock
+        assert ask(client).headers["x-cache"] == "MISS"
+        clock.now += 11 * 3600
+        assert ask(client).headers["x-cache"] == "HIT"
+        clock.now += 2 * 3600  # 13 hours old
+        overpass.elements = [node("New Post", 0.002)]
+        r = ask(client)
+    assert r.headers["x-cache"] == "MISS"
+    assert [p["name"] for p in body(r)["places"]] == ["New Post"], "the new answer replaced the old"
+    assert len(overpass.calls) == 2
+
+
+def test_when_the_map_servers_cannot_be_reached_the_old_answer_is_served(ola, overpass):
+    overpass.elements = one_place()
+    clock = Ticking()
+    with client_for(ola, overpass=overpass) as client:
+        client.app.state.nearby._clock = clock
+        ask(client)
+        clock.now += 3 * 24 * 3600  # three days old
+        overpass.override = lambda request: httpx.Response(503, text="down")
+        r = ask(client)
+    assert r.status_code == 200
+    assert r.headers["x-cache"] == "STALE"
+    assert [p["name"] for p in body(r)["places"]] == ["Hazratganj Police Station"]
+
+
+def test_with_no_old_answer_to_fall_back_on_it_is_still_an_error(ola, overpass):
+    overpass.override = lambda request: httpx.Response(503, text="down")
+    with client_for(ola, overpass=overpass) as client:
+        assert ask(client).status_code == 502
+
+
+def test_a_stale_answer_is_for_that_square_only(ola, overpass):
+    overpass.elements = one_place()
+    clock = Ticking()
+    with client_for(ola, overpass=overpass) as client:
+        client.app.state.nearby._clock = clock
+        ask(client)
+        clock.now += 24 * 3600
+        overpass.override = lambda request: httpx.Response(503, text="down")
+        assert ask(client).headers["x-cache"] == "STALE"
+        assert ask(client, lat=LAT + 0.5).status_code == 502, "nobody has asked about that square before"
+
+
+def test_a_kept_entry_in_an_unknown_shape_is_a_miss_not_a_crash(ola, overpass, fake_redis):
+    overpass.elements = one_place()
+    with client_for(ola, overpass=overpass, redis=fake_redis) as client:
+        ask(client)
+        key = next(k for k in fake_redis.data if ":nearby:" in k)
+        fake_redis.data[key] = json.dumps({"emergency": "an older shape"})
+        r = ask(client)
+    assert r.status_code == 200
+    assert len(body(r)["places"]) == 1
+    assert len(overpass.calls) == 2
+
+
+def test_the_stale_answer_still_measures_distance_from_the_person(ola, overpass):
+    overpass.elements = [node("Post", 0.003)]
+    clock = Ticking()
+    with client_for(ola, overpass=overpass) as client:
+        client.app.state.nearby._clock = clock
+        near = body(ask(client))["places"][0]["distance_m"]
+        clock.now += 24 * 3600
+        overpass.override = lambda request: httpx.Response(503, text="down")
+        r = ask(client, lat=LAT + 0.0007)
+    assert r.headers["x-cache"] == "STALE"
+    assert body(r)["places"][0]["distance_m"] < near - 50
+
+
+# ─── many people asking at once ───
+
+class SlowOverpass:
+    """Stands in for the client: counts questions, answers after a moment."""
+
+    def __init__(self, fail=False) -> None:
+        self.calls = 0
+        self.fail = fail
+
+    async def places(self, group, cell_lat, cell_lng, radius_m):
+        from app.clients.overpass import PlacesUnavailable
+
+        self.calls += 1
+        await asyncio.sleep(0.05)
+        if self.fail:
+            raise PlacesUnavailable("timeout")
+        police = {"name": "P", "category": "police", "lat": LAT, "lng": LNG, "phone": None, "address": None, "open_24h": None}
+        return {"police": [police], "hospital": [], "fire_station": []}
+
+
+def new_service(fake):
+    from app import cache as c
+    from app.services.nearby import NearbyService
+
+    return NearbyService(fake, c.LookupCache(memory_store=c.MemoryStore(), ttl_seconds={"nearby": 7 * 86400}))
+
+
+@pytest.mark.anyio
+async def test_people_asking_at_the_same_moment_cost_one_question():
+    fake = SlowOverpass()
+    service = new_service(fake)
+    results = await asyncio.gather(*[service.find("police", LAT, LNG, 3000) for _ in range(5)])
+    assert fake.calls == 1
+    assert sorted(how for _, how in results) == ["miss", "shared", "shared", "shared", "shared"]
+    assert all(len(places) == 1 for places, _ in results)
+
+
+@pytest.mark.anyio
+async def test_one_person_giving_up_does_not_cancel_the_question_for_the_others():
+    fake = SlowOverpass()
+    service = new_service(fake)
+    quitter = asyncio.ensure_future(service.find("police", LAT, LNG, 3000))
+    await asyncio.sleep(0.01)
+    stayer = asyncio.ensure_future(service.find("police", LAT, LNG, 3000))
+    await asyncio.sleep(0.01)
+    quitter.cancel()
+    places, how = await stayer
+    assert how == "shared"
+    assert len(places) == 1
+    assert fake.calls == 1
+
+
+@pytest.mark.anyio
+async def test_a_failed_question_is_shared_too_and_not_remembered():
+    from app.clients.overpass import PlacesUnavailable
+
+    fake = SlowOverpass(fail=True)
+    service = new_service(fake)
+    results = await asyncio.gather(*[service.find("police", LAT, LNG, 3000) for _ in range(3)], return_exceptions=True)
+    assert all(isinstance(r, PlacesUnavailable) for r in results)
+    assert fake.calls == 1
+    fake.fail = False
+    places, how = await service.find("police", LAT, LNG, 3000)
+    assert how == "miss", "the failure was not kept"
+    assert len(places) == 1
+
+
+@pytest.mark.anyio
+async def test_a_group_with_nothing_in_it_is_not_kept_as_an_answer():
+    fake = SlowOverpass()
+
+    async def empty(group, cell_lat, cell_lng, radius_m):
+        fake.calls += 1
+        return {"police": [], "hospital": [], "fire_station": []}
+
+    fake.places = empty
+    service = new_service(fake)
+    await service.find("police", LAT, LNG, 3000)
+    await service.find("police", LAT, LNG, 3000)
+    assert fake.calls == 2

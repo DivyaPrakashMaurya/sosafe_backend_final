@@ -62,8 +62,8 @@ CELL_MARGIN_M = 900
 
 # What one answer may hold per kind of place (the busy kinds are capped harder, so they cannot crowd out a rare
 # one in the same group), and what is sent back.
-FETCH_LIMIT = {"parking": 80, "restaurant": 80, "atm": 80}
-DEFAULT_FETCH_LIMIT = 60
+FETCH_LIMIT = {"parking": 50, "restaurant": 50, "atm": 50}
+DEFAULT_FETCH_LIMIT = 40
 RESULT_LIMIT = 20
 
 EARTH_RADIUS_M = 6_371_000.0
@@ -88,7 +88,7 @@ def _tag_filter(key: str, value: str) -> str:
     return f'["{key}"~"{value[1:]}"]' if value.startswith("~") else f'["{key}"="{value}"]'
 
 
-def build_group_query(group: str, cell_lat: float, cell_lng: float, radius_m: int, timeout_s: int = 8) -> str:
+def build_group_query(group: str, cell_lat: float, cell_lng: float, radius_m: int, timeout_s: int = 7) -> str:
     """The Overpass QL question for every kind of place in `group` within `radius_m` + the cell margin of the cell
     centre. Each kind has its own output statement (and its own limit)."""
     around = f"(around:{int(radius_m) + CELL_MARGIN_M},{cell_lat:.3f},{cell_lng:.3f})"

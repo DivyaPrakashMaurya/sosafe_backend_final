@@ -98,7 +98,7 @@ def create_app(
         app.state.limiter = RateLimiter(cache.redis, enabled=settings.rate_limit_enabled)
         app.state.ola = OlaClient(ola_http, settings)
         app.state.places = PlacesService(app.state.ola, cache)
-        app.state.nearby = NearbyService(OverpassClient(overpass_http, settings), cache)
+        app.state.nearby = NearbyService(OverpassClient(overpass_http, settings), cache, fresh_seconds=settings.nearby_fresh_seconds)
         app.state.verifier = (
             FirebaseTokenVerifier(settings.firebase_project_id, google_http)
             if settings.auth_mode != "off" and settings.firebase_project_id
