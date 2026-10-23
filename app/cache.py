@@ -65,6 +65,11 @@ def reverse_key(lat: float, lng: float) -> str:
     return f"{NAMESPACE}reverse:{_coord(lat)},{_coord(lng)}"
 
 
+def nearby_key(category: str, radius_m: int, cell_lat: float, cell_lng: float) -> str:
+    """One answer per kind of place, radius and ~1 km square (named by its centre, 3 decimals)."""
+    return f"{NAMESPACE}nearby:{category}:{int(radius_m)}:{cell_lat:.3f},{cell_lng:.3f}"
+
+
 def route_key(mode: str, start: tuple[float, float], end: tuple[float, float]) -> str:
     return f"{NAMESPACE}route:{mode}:{_coord(start[0])},{_coord(start[1])}>{_coord(end[0])},{_coord(end[1])}"
 

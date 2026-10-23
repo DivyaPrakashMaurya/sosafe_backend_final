@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .clients.ola import OlaUnavailable
+from .clients.overpass import PlacesUnavailable
 from .context import request_id_var
 
 logger = logging.getLogger("app.errors")
@@ -70,6 +71,14 @@ def register_error_handlers(app: FastAPI) -> None:
         if exc.reason in ("circuit_open", "rejected_key"):
             return error_response(503, "maps_unavailable", "The maps service is unavailable. Try again shortly.", {"Retry-After": "15"})
         return error_response(502, "maps_error", "The maps service failed. Try again.")
+
+    @app.exception_handler(PlacesUnavailable)
+    async def _places_down(_: Request, exc: PlacesUnavailable) -> JSONResponse:
+        if exc.reason == "timeout":
+            return error_response(504, "places_timeout", "The places service took too long. Try again.")
+        if exc.reason == "circuit_open":
+            return error_response(503, "places_unavailable", "The places service is unavailable. Try again shortly.", {"Retry-After": "15"})
+        return error_response(502, "places_error", "The places service failed. Try again.")
 
     @app.exception_handler(RequestValidationError)
     async def _invalid(_: Request, exc: RequestValidationError) -> JSONResponse:

@@ -99,6 +99,14 @@ class Settings:
     breaker_failures: int = 5  # in a row, before Ola is given a rest
     breaker_cooldown_seconds: float = 15.0
 
+    # ── OpenStreetMap (Overpass): nearby police stations, hospitals and the like ──
+    # Tried in this order; a public service, so it is asked about a ~1 km square at a time and answers are kept.
+    overpass_urls: tuple[str, ...] = (
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+    )
+    overpass_timeout: float = 9.0
+
     # ── sign-in (Firebase ID tokens) ──
     auth_mode: AuthMode = "optional"
     firebase_project_id: str = ""
@@ -112,6 +120,7 @@ class Settings:
             "coordinates": 30 * 24 * 3600,
             "reverse": 30 * 24 * 3600,
             "route": 120,
+            "nearby": 12 * 3600,
         }
     )
     cache_memory_max_entries: int = 5000
@@ -153,9 +162,11 @@ class Settings:
             "coordinates": _int(env, "CACHE_TTL_COORDINATES_SECONDS", 30 * day, 0, 90 * day),
             "reverse": _int(env, "CACHE_TTL_REVERSE_SECONDS", 30 * day, 0, 90 * day),
             "route": _int(env, "CACHE_TTL_ROUTE_SECONDS", 120, 0, 900),
+            "nearby": _int(env, "CACHE_TTL_NEARBY_SECONDS", 12 * 3600, 0, 7 * day),
         }
 
         origins = tuple(o.strip() for o in _text(env, "CORS_ORIGINS").split(",") if o.strip())
+        overpass = tuple(u.strip().rstrip("/") for u in _text(env, "OVERPASS_URLS").split(",") if u.strip())
 
         return cls(
             environment=_text(env, "ENVIRONMENT", "production").lower(),
@@ -169,6 +180,8 @@ class Settings:
             ola_max_connections=_int(env, "OLA_MAX_CONNECTIONS", 100, 1, 1000),
             breaker_failures=_int(env, "OLA_BREAKER_FAILURES", 5, 1, 100),
             breaker_cooldown_seconds=_float(env, "OLA_BREAKER_COOLDOWN_SECONDS", 15.0, 1.0, 600.0),
+            overpass_urls=overpass or cls.__dataclass_fields__["overpass_urls"].default,
+            overpass_timeout=_float(env, "OVERPASS_TIMEOUT_SECONDS", 9.0, 1.0, 30.0),
             auth_mode=auth_mode,  # type: ignore[arg-type]
             firebase_project_id=_text(env, "FIREBASE_PROJECT_ID"),
             redis_url=_text(env, "REDIS_URL"),

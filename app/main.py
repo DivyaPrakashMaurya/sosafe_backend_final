@@ -21,15 +21,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from .api import health
-from .api.v1 import location, route
+from .api.v1 import location, places, route
 from .auth import FirebaseTokenVerifier
 from .cache import make_cache
 from .clients.ola import OlaClient
+from .clients.overpass import OverpassClient
 from .config import Settings, load_env_file
 from .errors import register_error_handlers
 from .log import setup_logging
 from .middleware import RequestContextMiddleware
 from .rate_limit import RateLimiter
+from .services.nearby import NearbyService
 from .services.places import PlacesService
 
 logger = logging.getLogger("app")
@@ -42,9 +44,10 @@ def create_app(
     *,
     ola_transport: Optional[httpx.AsyncBaseTransport] = None,
     google_transport: Optional[httpx.AsyncBaseTransport] = None,
+    overpass_transport: Optional[httpx.AsyncBaseTransport] = None,
     redis_client: Any = None,
 ) -> FastAPI:
-    """`ola_transport`, `google_transport` and `redis_client` are for tests (pretend
+    """`ola_transport`, `google_transport`, `overpass_transport` and `redis_client` are for tests (pretend
     services); in production they are left out and the real ones are used."""
     if settings is None:
         load_env_file()  # .env for local runs; on a server the environment is set directly
@@ -69,6 +72,10 @@ def create_app(
             headers={"User-Agent": f"sosafe-backend/{VERSION}"},
         )
         google_http = httpx.AsyncClient(transport=google_transport, timeout=5.0)
+        overpass_http = httpx.AsyncClient(
+            transport=overpass_transport,
+            headers={"User-Agent": f"sosafe-backend/{VERSION} (nearby safe places)"},
+        )
 
         redis = redis_client
         owns_redis = False
@@ -91,6 +98,7 @@ def create_app(
         app.state.limiter = RateLimiter(cache.redis, enabled=settings.rate_limit_enabled)
         app.state.ola = OlaClient(ola_http, settings)
         app.state.places = PlacesService(app.state.ola, cache)
+        app.state.nearby = NearbyService(OverpassClient(overpass_http, settings), cache)
         app.state.verifier = (
             FirebaseTokenVerifier(settings.firebase_project_id, google_http)
             if settings.auth_mode != "off" and settings.firebase_project_id
@@ -105,6 +113,7 @@ def create_app(
         finally:
             await ola_http.aclose()
             await google_http.aclose()
+            await overpass_http.aclose()
             if owns_redis:
                 await redis.aclose()
 
@@ -121,6 +130,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(location.router)
     app.include_router(route.router)
+    app.include_router(places.router)
 
     # Added last = runs first: the request id is set before anything else.
     if settings.cors_origins:  # a phone app needs none; only for a web client, if one is ever made

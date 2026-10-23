@@ -88,6 +88,37 @@ class FakeOla:
         return httpx.MockTransport(self.handle)
 
 
+class FakeOverpass:
+    """Answers like OpenStreetMap's Overpass API. Records every question (url + the query text)."""
+
+    def __init__(self) -> None:
+        self.calls: list[httpx.Request] = []
+        # What an answer holds: Overpass "elements".
+        self.elements: list[dict[str, Any]] = []
+        # A function (request) -> httpx.Response | Exception | None, consulted first.
+        self.override: Optional[Callable[[httpx.Request], Any]] = None
+
+    def queries(self) -> list[str]:
+        out = []
+        for call in self.calls:
+            raw = call.content.decode("utf-8")
+            out.append(httpx.QueryParams(raw).get("data", ""))
+        return out
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
+        if self.override is not None:
+            result = self.override(request)
+            if isinstance(result, Exception):
+                raise result
+            if result is not None:
+                return result
+        return httpx.Response(200, json={"version": 0.6, "elements": self.elements})
+
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self.handle)
+
+
 class FakePipeline:
     def __init__(self, redis: "FakeRedis"):
         self._redis = redis
@@ -163,13 +194,25 @@ def fake_redis() -> FakeRedis:
     return FakeRedis()
 
 
+@pytest.fixture
+def overpass() -> FakeOverpass:
+    return FakeOverpass()
+
+
 def client_for(
     ola: FakeOla,
     settings: Optional[Settings] = None,
     redis: Any = None,
     google: Optional[httpx.MockTransport] = None,
+    overpass: Optional[FakeOverpass] = None,
 ) -> TestClient:
-    app = create_app(settings or make_settings(), ola_transport=ola.transport(), google_transport=google, redis_client=redis)
+    app = create_app(
+        settings or make_settings(),
+        ola_transport=ola.transport(),
+        google_transport=google,
+        overpass_transport=overpass.transport() if overpass is not None else None,
+        redis_client=redis,
+    )
     return TestClient(app, raise_server_exceptions=False)
 
 
