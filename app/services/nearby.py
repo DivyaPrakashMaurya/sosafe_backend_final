@@ -11,13 +11,17 @@ How an answer ages (the public map servers are often overloaded, so an old answe
   * never kept: an error, or an answer with nothing in it (it may be a hiccup, and asking again is free).
 
 Many requests for the same missing answer at the same moment make ONE question to OpenStreetMap.
+
+A question to OpenStreetMap is only asked if `permit` says so: the service-wide cap on how often the free public
+servers are asked (see config `nearby_upstream_per_minute`). Over the cap the answer is the old one if there is one
+("stale"), else a "busy" error; answers already kept are never held back.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from ..cache import LookupCache, nearby_key
 from ..clients.overpass import OverpassClient, PlacesUnavailable
@@ -33,11 +37,13 @@ class NearbyService:
         cache: LookupCache,
         fresh_seconds: int = DEFAULT_FRESH_SECONDS,
         clock: Callable[[], float] = time.time,
+        permit: Optional[Callable[[], Awaitable[bool]]] = None,
     ):
         self._overpass = overpass
         self._cache = cache
         self._fresh = fresh_seconds
         self._clock = clock
+        self._permit = permit
         self._inflight: dict[str, asyncio.Task] = {}
 
     async def find(self, category: str, lat: float, lng: float, radius_m: int) -> tuple[list[dict[str, Any]], str]:
@@ -69,6 +75,8 @@ class NearbyService:
         task = self._inflight.get(key)
         how = "shared"
         if task is None:
+            if self._permit is not None and not await self._permit():
+                raise PlacesUnavailable("busy")
             how = "miss" if self._cache.enabled else "off"
 
             async def ask_and_keep() -> dict:

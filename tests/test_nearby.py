@@ -292,7 +292,7 @@ def test_with_redis_the_answer_is_shared_and_kept_for_a_week_to_stand_in_when_th
     overpass.elements = one_place()
     with client_for(ola, overpass=overpass, redis=fake_redis) as client:
         ask(client)
-    keys = [k for k in fake_redis.data if ":nearby:" in k]
+    keys = [k for k in fake_redis.data if ":nearby:emergency:" in k]
     assert len(keys) == 1
     assert fake_redis.ttl[keys[0]] == 7 * 24 * 3600
     assert ":nearby:emergency:" in keys[0], "kept for the group"
@@ -679,7 +679,7 @@ def test_a_kept_entry_in_an_unknown_shape_is_a_miss_not_a_crash(ola, overpass, f
     overpass.elements = one_place()
     with client_for(ola, overpass=overpass, redis=fake_redis) as client:
         ask(client)
-        key = next(k for k in fake_redis.data if ":nearby:" in k)
+        key = next(k for k in fake_redis.data if ":nearby:emergency:" in k)
         fake_redis.data[key] = json.dumps({"emergency": "an older shape"})
         r = ask(client)
     assert r.status_code == 200
@@ -780,3 +780,100 @@ async def test_a_group_with_nothing_in_it_is_not_kept_as_an_answer():
     await service.find("police", LAT, LNG, 3000)
     await service.find("police", LAT, LNG, 3000)
     assert fake.calls == 2
+
+
+
+# ─── not hammering the free public map servers ───
+
+def fresh_cell(i):
+    """A latitude in its own ~1 km square, so every call is an answer nobody has kept."""
+    return 20.0 + i * 0.05
+
+
+def test_one_person_is_held_to_thirty_place_searches_a_minute(ola, overpass):
+    overpass.elements = one_place()
+    settings = make_settings(rate_limit_nearby_per_minute=3, nearby_upstream_per_minute=1000)
+    with client_for(ola, settings, overpass=overpass) as client:
+        codes = [ask(client, lat=fresh_cell(i)).status_code for i in range(5)]
+    assert codes == [200, 200, 200, 429, 429]
+
+
+def test_the_personal_cap_counts_answers_that_were_already_kept_too(ola, overpass):
+    overpass.elements = one_place()
+    settings = make_settings(rate_limit_nearby_per_minute=2, nearby_upstream_per_minute=1000)
+    with client_for(ola, settings, overpass=overpass) as client:
+        codes = [ask(client).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
+    assert len(overpass.calls) == 1
+
+
+def test_the_personal_cap_is_separate_from_the_one_for_routes(ola, overpass):
+    overpass.elements = one_place()
+    settings = make_settings(rate_limit_nearby_per_minute=1, rate_limit_route_per_minute=1)
+    with client_for(ola, settings, overpass=overpass) as client:
+        assert ask(client).status_code == 200
+        assert ask(client).status_code == 429
+        r = client.post("/api/v1/route/calculate", json={"waypoints": [{"lat": 26.8, "lng": 80.9}, {"lat": 26.9, "lng": 81.0}]})
+    assert r.status_code != 429, "routes have their own count"
+
+
+def test_the_whole_service_asks_the_public_servers_at_most_so_often(ola, overpass):
+    overpass.elements = one_place()
+    settings = make_settings(rate_limit_nearby_per_minute=1000, nearby_upstream_per_minute=2)
+    with client_for(ola, settings, overpass=overpass) as client:
+        results = [ask(client, lat=fresh_cell(i)) for i in range(4)]
+    assert [r.status_code for r in results] == [200, 200, 429, 429]
+    assert body(results[2])["error"]["code"] == "places_busy"
+    assert results[2].headers["retry-after"] == "15"
+    assert len(overpass.calls) == 2, "the map servers were not asked beyond the cap"
+
+
+def test_answers_already_kept_are_never_held_back_by_the_service_cap(ola, overpass):
+    overpass.elements = one_place()
+    settings = make_settings(rate_limit_nearby_per_minute=1000, nearby_upstream_per_minute=1)
+    with client_for(ola, settings, overpass=overpass) as client:
+        first = ask(client)
+        again = [ask(client).status_code for _ in range(5)]
+    assert first.status_code == 200
+    assert again == [200] * 5
+    assert len(overpass.calls) == 1
+
+
+def test_over_the_service_cap_an_old_answer_is_still_served(ola, overpass):
+    overpass.elements = one_place()
+    clock = Ticking()
+    settings = make_settings(rate_limit_nearby_per_minute=1000, nearby_upstream_per_minute=1)
+    with client_for(ola, settings, overpass=overpass) as client:
+        client.app.state.nearby._clock = clock
+        ask(client)
+        clock.now += 24 * 3600  # too old to be fresh: it would be asked for again, but the cap is used up
+        r = ask(client)
+    assert r.status_code == 200
+    assert r.headers["x-cache"] == "STALE"
+    assert len(overpass.calls) == 1
+
+
+def test_a_busy_refusal_is_not_remembered(ola, overpass):
+    overpass.elements = one_place()
+    settings = make_settings(rate_limit_nearby_per_minute=1000, nearby_upstream_per_minute=1)
+    with client_for(ola, settings, overpass=overpass) as client:
+        ask(client, lat=fresh_cell(0))
+        assert ask(client, lat=fresh_cell(1)).status_code == 429
+        assert client.app.state.nearby._inflight == {}, "nothing is left waiting"
+
+
+def test_the_caps_can_be_set_from_the_environment():
+    from app.config import Settings
+
+    s = Settings.from_env({"OLA_API_KEY": "k", "RATE_LIMIT_NEARBY_PER_MINUTE": "12", "NEARBY_UPSTREAM_PER_MINUTE": "40"})
+    assert (s.rate_limit_nearby_per_minute, s.nearby_upstream_per_minute) == (12, 40)
+    d = Settings.from_env({"OLA_API_KEY": "k"})
+    assert (d.rate_limit_nearby_per_minute, d.nearby_upstream_per_minute) == (30, 60)
+
+
+def test_the_deploy_config_turns_sign_in_on():
+    import pathlib
+
+    text = (pathlib.Path(__file__).resolve().parent.parent / "render.yaml").read_text(encoding="utf-8")
+    block = text.split("key: AUTH_MODE", 1)[1].split("- key:", 1)[0]
+    assert "value: required" in block, "production must not accept anonymous callers"

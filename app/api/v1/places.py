@@ -27,7 +27,7 @@ async def nearby(
 ) -> dict:
     if radius > MAX_RADIUS_M[group_of(category)]:
         raise ApiError(422, "invalid_request", "Invalid radius.")
-    await enforce_rate_limit(request, caller)
+    await enforce_rate_limit(request, caller, nearby=True)
     places, how = await request.app.state.nearby.find(category, lat, lng, radius)
     response.headers["X-Cache"] = how.upper()
     return {"status": "success", "category": category, "radius": radius, "places": places}

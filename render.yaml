@@ -41,7 +41,7 @@ services:
       - key: FIREBASE_PROJECT_ID
         sync: false
       - key: AUTH_MODE
-        value: optional        # switch to "required" once the app that sends tokens is out
+        value: required        # every app build since 2026-10-08 sends the sign-in token; anonymous callers get 401
       - key: TRUSTED_PROXY_HOPS
         value: "1"             # Render's load balancer adds one X-Forwarded-For entry
       - key: REDIS_URL

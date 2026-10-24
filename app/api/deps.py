@@ -76,7 +76,7 @@ async def get_caller(request: Request) -> Caller:
     return Caller(uid, ip)
 
 
-async def enforce_rate_limit(request: Request, caller: Caller, route: bool = False) -> None:
+async def enforce_rate_limit(request: Request, caller: Caller, route: bool = False, nearby: bool = False) -> None:
     """429 with Retry-After when over the limit. Signed-in people are counted by
     who they are; others by network address (with a generous limit)."""
     state = request.app.state
@@ -92,6 +92,8 @@ async def enforce_rate_limit(request: Request, caller: Caller, route: bool = Fal
     checks = [(bucket_id("all", identity), limit)]
     if route:
         checks.append((bucket_id("route", identity), settings.rate_limit_route_per_minute))
+    if nearby:
+        checks.append((bucket_id("nearby", identity), settings.rate_limit_nearby_per_minute))
 
     for bucket, bucket_limit in checks:
         decision = await limiter.hit(bucket, bucket_limit)

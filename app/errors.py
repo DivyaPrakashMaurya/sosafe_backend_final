@@ -78,6 +78,8 @@ def register_error_handlers(app: FastAPI) -> None:
             return error_response(504, "places_timeout", "The places service took too long. Try again.")
         if exc.reason == "circuit_open":
             return error_response(503, "places_unavailable", "The places service is unavailable. Try again shortly.", {"Retry-After": "15"})
+        if exc.reason == "busy":
+            return error_response(429, "places_busy", "Too many place searches right now. Try again in a moment.", {"Retry-After": "15"})
         return error_response(502, "places_error", "The places service failed. Try again.")
 
     @app.exception_handler(RequestValidationError)

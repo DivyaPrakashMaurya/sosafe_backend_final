@@ -30,7 +30,7 @@ from .config import Settings, load_env_file
 from .errors import register_error_handlers
 from .log import setup_logging
 from .middleware import RequestContextMiddleware
-from .rate_limit import RateLimiter
+from .rate_limit import RateLimiter, bucket_id
 from .services.nearby import NearbyService
 from .services.places import PlacesService
 
@@ -98,7 +98,20 @@ def create_app(
         app.state.limiter = RateLimiter(cache.redis, enabled=settings.rate_limit_enabled)
         app.state.ola = OlaClient(ola_http, settings)
         app.state.places = PlacesService(app.state.ola, cache)
-        app.state.nearby = NearbyService(OverpassClient(overpass_http, settings), cache, fresh_seconds=settings.nearby_fresh_seconds)
+        limiter = app.state.limiter
+
+        async def may_ask_map_servers() -> bool:
+            if not limiter.enabled:
+                return True
+            decision = await limiter.hit(bucket_id("nearby_upstream", "all"), settings.nearby_upstream_per_minute)
+            return decision.allowed
+
+        app.state.nearby = NearbyService(
+            OverpassClient(overpass_http, settings),
+            cache,
+            fresh_seconds=settings.nearby_fresh_seconds,
+            permit=may_ask_map_servers,
+        )
         app.state.verifier = (
             FirebaseTokenVerifier(settings.firebase_project_id, google_http)
             if settings.auth_mode != "off" and settings.firebase_project_id

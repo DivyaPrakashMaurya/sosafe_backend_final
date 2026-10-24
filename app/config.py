@@ -138,6 +138,11 @@ class Settings:
     rate_limit_enabled: bool = True
     rate_limit_user_per_minute: int = 300  # a signed-in person, all lookups together
     rate_limit_route_per_minute: int = 30  # route calculations, per person (or per address when anonymous)
+    # Safe-places lookups, per person (or per address when anonymous). Each new ~1 km square is a question to the free
+    # public map servers, which must not be hammered: the person's own cap, and a cap for the whole service below.
+    rate_limit_nearby_per_minute: int = 30
+    # Questions to the public map servers (answers not already kept) per minute, for everybody together.
+    nearby_upstream_per_minute: int = 60
     # Per network address when not signed in. Generous: on Indian mobile networks
     # thousands of phones can share one public address.
     rate_limit_anonymous_per_minute: int = 1200
@@ -202,6 +207,8 @@ class Settings:
             rate_limit_enabled=_bool(env, "RATE_LIMIT_ENABLED", True),
             rate_limit_user_per_minute=_int(env, "RATE_LIMIT_USER_PER_MINUTE", 300, 1, 100_000),
             rate_limit_route_per_minute=_int(env, "RATE_LIMIT_ROUTE_PER_MINUTE", 30, 1, 10_000),
+            rate_limit_nearby_per_minute=_int(env, "RATE_LIMIT_NEARBY_PER_MINUTE", 30, 1, 10_000),
+            nearby_upstream_per_minute=_int(env, "NEARBY_UPSTREAM_PER_MINUTE", 60, 1, 100_000),
             rate_limit_anonymous_per_minute=_int(env, "RATE_LIMIT_ANONYMOUS_PER_MINUTE", 1200, 1, 1_000_000),
             trusted_proxy_hops=_int(env, "TRUSTED_PROXY_HOPS", 1, 0, 5),
             max_body_bytes=_int(env, "MAX_BODY_BYTES", 16 * 1024, 1024, 1024 * 1024),
